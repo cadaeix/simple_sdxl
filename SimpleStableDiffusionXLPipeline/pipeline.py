@@ -23,10 +23,11 @@ import PIL.Image
 import torch
 from transformers import CLIPTextModel, CLIPTextModelWithProjection, CLIPTokenizer
 
+from diffusers.models.lora import adjust_lora_scale_text_encoder
 from diffusers.image_processor import VaeImageProcessor
 from diffusers.loaders import (
     FromSingleFileMixin,
-    LoraLoaderMixin,
+    StableDiffusionXLLoraLoaderMixin,
     TextualInversionLoaderMixin,
 )
 from diffusers.models import AutoencoderKL, UNet2DConditionModel
@@ -87,7 +88,10 @@ def rescale_noise_cfg(noise_cfg, noise_pred_text, guidance_rescale=0.0):
 
 
 class StableDiffusionXLPipeline(
-    DiffusionPipeline, FromSingleFileMixin, LoraLoaderMixin
+    DiffusionPipeline,
+    FromSingleFileMixin,
+    StableDiffusionXLLoraLoaderMixin,
+    TextualInversionLoaderMixin,
 ):
     r"""
     Pipeline for text-to-image generation using Stable Diffusion XL.
@@ -314,12 +318,22 @@ class StableDiffusionXLPipeline(
 
         # set lora scale so that monkey patched LoRA
         # function of text encoder can correctly access it
-        if lora_scale is not None and isinstance(self, LoraLoaderMixin):
+        if lora_scale is not None and isinstance(
+            self, StableDiffusionXLLoraLoaderMixin
+        ):
             self._lora_scale = lora_scale
 
-        if prompt is not None and isinstance(prompt, str):
-            batch_size = 1
-        elif prompt is not None and isinstance(prompt, list):
+            # dynamically adjust the LoRA scale
+            adjust_lora_scale_text_encoder(
+                self.text_encoder, lora_scale, self.use_peft_backend
+            )
+            adjust_lora_scale_text_encoder(
+                self.text_encoder_2, lora_scale, self.use_peft_backend
+            )
+
+        prompt = [prompt] if isinstance(prompt, str) else prompt
+
+        if prompt is not None:
             batch_size = len(prompt)
         else:
             batch_size = prompt_embeds.shape[0]
@@ -1216,89 +1230,3 @@ class StableDiffusionXLPipeline(
             return (image,)
 
         return StableDiffusionXLPipelineOutput(images=image)
-
-    # Overrride to properly handle the loading and unloading of the additional text encoder.
-    def load_lora_weights(
-        self,
-        pretrained_model_name_or_path_or_dict: Union[str, Dict[str, torch.Tensor]],
-        **kwargs,
-    ):
-        state_dict, network_alpha = self.lora_state_dict(
-            pretrained_model_name_or_path_or_dict, **kwargs
-        )
-        self.load_lora_into_unet(
-            state_dict, network_alpha=network_alpha, unet=self.unet
-        )
-
-        text_encoder_state_dict = {
-            k: v for k, v in state_dict.items() if "text_encoder." in k
-        }
-        if len(text_encoder_state_dict) > 0:
-            self.load_lora_into_text_encoder(
-                text_encoder_state_dict,
-                network_alpha=network_alpha,
-                text_encoder=self.text_encoder,
-                prefix="text_encoder",
-                lora_scale=self.lora_scale,
-            )
-
-        text_encoder_2_state_dict = {
-            k: v for k, v in state_dict.items() if "text_encoder_2." in k
-        }
-        if len(text_encoder_2_state_dict) > 0:
-            self.load_lora_into_text_encoder(
-                text_encoder_2_state_dict,
-                network_alpha=network_alpha,
-                text_encoder=self.text_encoder_2,
-                prefix="text_encoder_2",
-                lora_scale=self.lora_scale,
-            )
-
-    @classmethod
-    def save_lora_weights(
-        self,
-        save_directory: Union[str, os.PathLike],
-        unet_lora_layers: Dict[str, Union[torch.nn.Module, torch.Tensor]] = None,
-        text_encoder_lora_layers: Dict[
-            str, Union[torch.nn.Module, torch.Tensor]
-        ] = None,
-        text_encoder_2_lora_layers: Dict[
-            str, Union[torch.nn.Module, torch.Tensor]
-        ] = None,
-        is_main_process: bool = True,
-        weight_name: str = None,
-        save_function: Callable = None,
-        safe_serialization: bool = False,
-    ):
-        state_dict = {}
-
-        def pack_weights(layers, prefix):
-            layers_weights = (
-                layers.state_dict() if isinstance(layers, torch.nn.Module) else layers
-            )
-            layers_state_dict = {
-                f"{prefix}.{module_name}": param
-                for module_name, param in layers_weights.items()
-            }
-            return layers_state_dict
-
-        state_dict.update(pack_weights(unet_lora_layers, "unet"))
-
-        if text_encoder_lora_layers and text_encoder_2_lora_layers:
-            state_dict.update(pack_weights(text_encoder_lora_layers, "text_encoder"))
-            state_dict.update(
-                pack_weights(text_encoder_2_lora_layers, "text_encoder_2")
-            )
-
-        self.write_lora_layers(
-            state_dict=state_dict,
-            save_directory=save_directory,
-            is_main_process=is_main_process,
-            weight_name=weight_name,
-            save_function=save_function,
-            safe_serialization=safe_serialization,
-        )
-
-    def _remove_text_encoder_monkey_patch(self):
-        self._remove_text_encoder_monkey_patch_classmethod(self.text_encoder)
-        self._remove_text_encoder_monkey_patch_classmethod(self.text_encoder_2)
