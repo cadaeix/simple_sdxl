@@ -100,12 +100,11 @@ class StableDiffusionXLPipeline(
     library implements for all the pipelines (such as downloading or saving, running on a particular device, etc.)
 
     In addition the pipeline inherits the following loading methods:
-        - *Textual-Inversion*: [`loaders.TextualInversionLoaderMixin.load_textual_inversion`]
-        - *LoRA*: [`loaders.LoraLoaderMixin.load_lora_weights`]
+        - *LoRA*: [`loaders.StableDiffusionXLLoraLoaderMixin.load_lora_weights`]
         - *Ckpt*: [`loaders.FromSingleFileMixin.from_single_file`]
 
     as well as the following saving methods:
-        - *LoRA*: [`loaders.LoraLoaderMixin.save_lora_weights`]
+        - *LoRA*: [`loaders.StableDiffusionXLLoraLoaderMixin.save_lora_weights`]
 
     Args:
         vae ([`AutoencoderKL`]):
@@ -130,7 +129,15 @@ class StableDiffusionXLPipeline(
         scheduler ([`SchedulerMixin`]):
             A scheduler to be used in combination with `unet` to denoise the encoded image latents. Can be one of
             [`DDIMScheduler`], [`LMSDiscreteScheduler`], or [`PNDMScheduler`].
+        force_zeros_for_empty_prompt (`bool`, *optional*, defaults to `"True"`):
+            Whether the negative prompt embeddings shall be forced to always be set to 0. Also see the config of
+            `stabilityai/stable-diffusion-xl-base-1-0`.
+        add_watermarker (`bool`, *optional*):
+            Whether to use the [invisible_watermark library](https://github.com/ShieldMnt/invisible-watermark/) to
+            watermark output images. If not defined, it will default to True if the package is installed, otherwise no
+            watermarker will be used.
     """
+    model_cpu_offload_seq = "text_encoder->text_encoder_2->unet->vae"
 
     def __init__(
         self,
@@ -142,6 +149,7 @@ class StableDiffusionXLPipeline(
         unet: UNet2DConditionModel,
         scheduler: KarrasDiffusionSchedulers,
         force_zeros_for_empty_prompt: bool = True,
+        add_watermarker: Optional[bool] = None,
     ):
         super().__init__()
 
@@ -160,6 +168,17 @@ class StableDiffusionXLPipeline(
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor)
         self.default_sample_size = self.unet.config.sample_size
+
+        add_watermarker = (
+            add_watermarker
+            if add_watermarker is not None
+            else is_invisible_watermark_available()
+        )
+
+        if add_watermarker:
+            self.watermark = StableDiffusionXLWatermarker()
+        else:
+            self.watermark = None
 
     # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.enable_vae_slicing
     def enable_vae_slicing(self):
@@ -274,6 +293,7 @@ class StableDiffusionXLPipeline(
         pooled_prompt_embeds: Optional[torch.FloatTensor] = None,
         negative_pooled_prompt_embeds: Optional[torch.FloatTensor] = None,
         lora_scale: Optional[float] = None,
+        clip_skip: Optional[int] = None,
     ):
         r"""
         Encodes the prompt into text encoder hidden states.
@@ -313,6 +333,9 @@ class StableDiffusionXLPipeline(
                 input argument.
             lora_scale (`float`, *optional*):
                 A lora scale that will be applied to all LoRA layers of the text encoder if LoRA layers are loaded.
+            clip_skip (`int`, *optional*):
+                Number of layers to be skipped from CLIP while computing the prompt embeddings. A value of 1 means that
+                the output of the pre-final layer will be used for computing the prompt embeddings.
         """
         device = device or self._execution_device
 
@@ -352,6 +375,8 @@ class StableDiffusionXLPipeline(
 
         if prompt_embeds is None:
             prompt_2 = prompt_2 or prompt
+            prompt_2 = [prompt_2] if isinstance(prompt_2, str) else prompt_2
+
             # textual inversion: procecss multi-vector tokens if necessary
             prompt_embeds_list = []
             prompts = [prompt, prompt_2]
@@ -373,9 +398,6 @@ class StableDiffusionXLPipeline(
                 untruncated_ids = tokenizer(
                     prompt, padding="longest", return_tensors="pt"
                 ).input_ids
-                untruncated_ids = tokenizer(
-                    prompt, padding="longest", return_tensors="pt"
-                ).input_ids
 
                 if untruncated_ids.shape[-1] >= text_input_ids.shape[
                     -1
@@ -389,13 +411,16 @@ class StableDiffusionXLPipeline(
                     )
 
                 prompt_embeds = text_encoder(
-                    text_input_ids.to(device),
-                    output_hidden_states=True,
+                    text_input_ids.to(device), output_hidden_states=True
                 )
 
                 # We are only ALWAYS interested in the pooled output of the final text encoder
                 pooled_prompt_embeds = prompt_embeds[0]
-                prompt_embeds = prompt_embeds.hidden_states[-2]
+                if clip_skip is None:
+                    prompt_embeds = prompt_embeds.hidden_states[-2]
+                else:
+                    # "2" because SDXL always indexes from the penultimate layer.
+                    prompt_embeds = prompt_embeds.hidden_states[-(clip_skip + 2)]
 
                 prompt_embeds_list.append(prompt_embeds)
 
@@ -416,14 +441,24 @@ class StableDiffusionXLPipeline(
             negative_prompt = negative_prompt or ""
             negative_prompt_2 = negative_prompt_2 or negative_prompt
 
+            # normalize str to list
+            negative_prompt = (
+                batch_size * [negative_prompt]
+                if isinstance(negative_prompt, str)
+                else negative_prompt
+            )
+            negative_prompt_2 = (
+                batch_size * [negative_prompt_2]
+                if isinstance(negative_prompt_2, str)
+                else negative_prompt_2
+            )
+
             uncond_tokens: List[str]
             if prompt is not None and type(prompt) is not type(negative_prompt):
                 raise TypeError(
                     f"`negative_prompt` should be the same type to `prompt`, but got {type(negative_prompt)} !="
                     f" {type(prompt)}."
                 )
-            elif isinstance(negative_prompt, str):
-                uncond_tokens = [negative_prompt, negative_prompt_2]
             elif batch_size != len(negative_prompt):
                 raise ValueError(
                     f"`negative_prompt`: {negative_prompt} has batch size {len(negative_prompt)}, but `prompt`:"
@@ -741,55 +776,23 @@ class StableDiffusionXLPipeline(
     #     return add_time_ids
 
     def _get_add_time_ids(
-        self,
-        original_size,
-        crops_coords_top_left,
-        target_size,
-        dtype,
-        aesthetic_score=None,
-        negative_aesthetic_score=None,
+        self, original_size, crops_coords_top_left, target_size, dtype
     ):
-        # fix this
-        # if aesthetic_score and negative_aesthetic_score:
-        #     if self.configrequires_aesthetics_score) and self.config.requires_aesthetics_score:
-        #         add_time_ids = list(original_size + crops_coords_top_left + (aesthetic_score,))
-        #         add_neg_time_ids = list(original_size + crops_coords_top_left + (negative_aesthetic_score,))
-        #     else:
-        #         add_time_ids = list(original_size + crops_coords_top_left + target_size)
-        #         add_neg_time_ids = list(original_size + crops_coords_top_left + target_size)
         add_time_ids = list(original_size + crops_coords_top_left + target_size)
-        add_neg_time_ids = list(original_size + crops_coords_top_left + target_size)
+
         passed_add_embed_dim = (
             self.unet.config.addition_time_embed_dim * len(add_time_ids)
             + self.text_encoder_2.config.projection_dim
         )
         expected_add_embed_dim = self.unet.add_embedding.linear_1.in_features
 
-        if (
-            expected_add_embed_dim > passed_add_embed_dim
-            and (expected_add_embed_dim - passed_add_embed_dim)
-            == self.unet.config.addition_time_embed_dim
-        ):
-            raise ValueError(
-                f"Model expects an added time embedding vector of length {expected_add_embed_dim}, but a vector of {passed_add_embed_dim} was created. Please make sure to enable `requires_aesthetics_score` with `pipe.register_to_config(requires_aesthetics_score=True)` to make sure `aesthetic_score` {aesthetic_score} and `negative_aesthetic_score` {negative_aesthetic_score} is correctly used by the model."
-            )
-        elif (
-            expected_add_embed_dim < passed_add_embed_dim
-            and (passed_add_embed_dim - expected_add_embed_dim)
-            == self.unet.config.addition_time_embed_dim
-        ):
-            raise ValueError(
-                f"Model expects an added time embedding vector of length {expected_add_embed_dim}, but a vector of {passed_add_embed_dim} was created. Please make sure to disable `requires_aesthetics_score` with `pipe.register_to_config(requires_aesthetics_score=False)` to make sure `target_size` {target_size} is correctly used by the model."
-            )
-        elif expected_add_embed_dim != passed_add_embed_dim:
+        if expected_add_embed_dim != passed_add_embed_dim:
             raise ValueError(
                 f"Model expects an added time embedding vector of length {expected_add_embed_dim}, but a vector of {passed_add_embed_dim} was created. The model has an incorrect config. Please check `unet.config.time_embedding_type` and `text_encoder_2.config.projection_dim`."
             )
 
         add_time_ids = torch.tensor([add_time_ids], dtype=dtype)
-        add_neg_time_ids = torch.tensor([add_neg_time_ids], dtype=dtype)
-
-        return add_time_ids, add_neg_time_ids
+        return add_time_ids
 
     # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_upscale.StableDiffusionUpscalePipeline.upcast_vae
     def upcast_vae(self):
@@ -852,9 +855,11 @@ class StableDiffusionXLPipeline(
         guidance_rescale: float = 0.0,
         original_size: Tuple[int, int] = None,
         crops_coords_top_left: Tuple[int, int] = (0, 0),
-        target_size: Tuple[int, int] = None,
-        aesthetic_score: Optional[float] = 6.0,
-        negative_aesthetic_score: Optional[float] = 2.5,
+        target_size: Optional[Tuple[int, int]] = None,
+        negative_original_size: Optional[Tuple[int, int]] = None,
+        negative_crops_coords_top_left: Tuple[int, int] = (0, 0),
+        negative_target_size: Optional[Tuple[int, int]] = None,
+        clip_skip: Optional[int] = None,
         **kwargs,
     ):
         r"""
@@ -1040,6 +1045,7 @@ class StableDiffusionXLPipeline(
             pooled_prompt_embeds=pooled_prompt_embeds,
             negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
             lora_scale=text_encoder_lora_scale,
+            clip_skip=clip_skip,
         )
 
         def denoising_value_valid(dnv):
@@ -1103,21 +1109,25 @@ class StableDiffusionXLPipeline(
 
         # 8. Prepare added time ids & embeddings
         add_text_embeds = pooled_prompt_embeds
-        add_time_ids, add_neg_time_ids = self._get_add_time_ids(
-            original_size,
-            crops_coords_top_left,
-            target_size,
-            aesthetic_score=aesthetic_score,
-            negative_aesthetic_score=negative_aesthetic_score,
-            dtype=prompt_embeds.dtype,
+        add_time_ids = self._get_add_time_ids(
+            original_size, crops_coords_top_left, target_size, dtype=prompt_embeds.dtype
         )
+        if negative_original_size is not None and negative_target_size is not None:
+            negative_add_time_ids = self._get_add_time_ids(
+                negative_original_size,
+                negative_crops_coords_top_left,
+                negative_target_size,
+                dtype=prompt_embeds.dtype,
+            )
+        else:
+            negative_add_time_ids = add_time_ids
 
         if do_classifier_free_guidance:
             prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
             add_text_embeds = torch.cat(
                 [negative_pooled_prompt_embeds, add_text_embeds], dim=0
             )
-            add_time_ids = torch.cat([add_neg_time_ids, add_time_ids], dim=0)
+            add_time_ids = torch.cat([negative_add_time_ids, add_time_ids], dim=0)
 
         prompt_embeds = prompt_embeds.to(device)
         add_text_embeds = add_text_embeds.to(device)
