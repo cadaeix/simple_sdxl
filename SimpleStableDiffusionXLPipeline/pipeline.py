@@ -40,7 +40,6 @@ from diffusers.models.attention_processor import (
 from diffusers.schedulers import KarrasDiffusionSchedulers
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.utils import (
-    is_invisible_watermark_available,
     is_accelerate_available,
     is_accelerate_version,
     logging,

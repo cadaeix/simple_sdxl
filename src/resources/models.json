@@ -1,0 +1,34 @@
+{
+  "SDXL": {
+    "type": "diffusers",
+    "url": "stabilityai/stable-diffusion-xl-base-1.0",
+    "description": "Stable Diffusion XL, base model",
+    "refiner": "stabilityai/stable-diffusion-xl-refiner-1.0",
+    "vae": {
+      "type": "diffusers",
+      "url": "madebyollin/sdxl-vae-fp16-fix"
+    }
+  },
+  "SDXL Turbo": {
+    "type": "diffusers",
+    "url": "stabilityai/sdxl-turbo",
+    "description": "Stable Diffusion XL Turbo, good with 1 - 4 steps, super fast"
+  },
+  "Counterfeit 1.0": {
+    "type": "diffusers",
+    "url": "gsdf/CounterfeitXL",
+    "description": "Anime model"
+  },
+  "ProtoVision XL": {
+    "type": "civitai",
+    "url": "https://civitai.com/api/download/models/201514",
+    "description": "\"High Fidelity 3D / Photorealism / Anime / hyperrealism - No Refiner Needed\"",
+    "filename": "protovisionXL.safetensors"
+  },
+  "DucHaiten-AIart-SDXL": {
+    "type": "civitai",
+    "url": "https://civitai.com/api/download/models/136754",
+    "description": "General artistic model",
+    "filename": "DucHaiten-AIart-SDXL.safetensors"
+  }
+}
