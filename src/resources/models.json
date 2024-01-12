@@ -37,7 +37,11 @@
   "Animagine XL 3.0": {
     "type": "diffusers",
     "url": "cagliostrolab/animagine-xl-3.0",
-    "description": "Anime model"
+    "description": "Anime model",
+    "vae": {
+      "type": "diffusers",
+      "url": "madebyollin/sdxl-vae-fp16-fix"
+    }
   },
   "ProtoVision XL": {
     "type": "civitai",
