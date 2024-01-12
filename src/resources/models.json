@@ -14,9 +14,29 @@
     "url": "stabilityai/sdxl-turbo",
     "description": "Stable Diffusion XL Turbo, good with 1 - 4 steps, super fast"
   },
+  "OpenDalleV1.1": {
+    "type": "diffusers",
+    "url": "dataautogpt3/OpenDalleV1.1",
+    "description": "General Artistic Model"
+  },
+  "Playground V2": {
+    "type": "diffusers",
+    "url": "playgroundai/playground-v2-1024px-aesthetic",
+    "description": "General Artistic Model"
+  },
+  "Dreamshaper XL Turbo": {
+    "type": "diffusers",
+    "url": "Lykon/dreamshaper-xl-turbo",
+    "description": "General Artistic Model, turbo"
+  },
   "Counterfeit 1.0": {
     "type": "diffusers",
     "url": "gsdf/CounterfeitXL",
+    "description": "Anime model"
+  },
+  "Animagine XL 3.0": {
+    "type": "diffusers",
+    "url": "cagliostrolab/animagine-xl-3.0",
     "description": "Anime model"
   },
   "ProtoVision XL": {
