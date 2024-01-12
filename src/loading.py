@@ -28,22 +28,38 @@ def defined_model_choice_picker(model_choice: dict, model_dir: str):
             vae = AutoencoderKL.from_pretrained(
                 model_choice["vae"]["url"], torch_dtype=torch.float16
             )
-            pipe = DiffusionPipeline.from_pretrained(
-                model_choice["url"],
-                vae=vae,
-                custom_pipeline="SimpleStableDiffusionXLPipeline",
-                torch_dtype=torch.float16,
-                variant="fp16",
-                use_safetensors=True,
-            )
+            try:
+                pipe = DiffusionPipeline.from_pretrained(
+                    model_choice["url"],
+                    vae=vae,
+                    custom_pipeline="SimpleStableDiffusionXLPipeline",
+                    torch_dtype=torch.float16,
+                    variant="fp16",
+                    use_safetensors=True,
+                )
+            except ValueError as e:
+                pipe = DiffusionPipeline.from_pretrained(
+                    model_choice["url"],
+                    vae=vae,
+                    custom_pipeline="SimpleStableDiffusionXLPipeline",
+                    torch_dtype=torch.float16,
+                    use_safetensors=True,
+                )
         else:
-            pipe = DiffusionPipeline.from_pretrained(
-                model_choice["url"],
-                custom_pipeline="SimpleStableDiffusionXLPipeline",
-                torch_dtype=torch.float16,
-                variant="fp16",
-                use_safetensors=True,
-            )
+            try:
+                pipe = DiffusionPipeline.from_pretrained(
+                    model_choice["url"],
+                    custom_pipeline="SimpleStableDiffusionXLPipeline",
+                    torch_dtype=torch.float16,
+                    variant="fp16",
+                    use_safetensors=True,
+                )
+            except ValueError as e:
+                pipe = DiffusionPipeline.from_pretrained(
+                    model_choice["url"],
+                    custom_pipeline="SimpleStableDiffusionXLPipeline",
+                    use_safetensors=True,
+                )
     elif model_choice["type"] == "civitai":
         civitai_file = download_file_with_requests_if_not_downloaded(
             model_choice["url"], f"{model_dir}/{model_choice['filename']}"
@@ -53,7 +69,6 @@ def defined_model_choice_picker(model_choice: dict, model_dir: str):
             vae=vae,
             custom_pipeline="SimpleStableDiffusionXLPipeline",
             torch_dtype=torch.float16,
-            variant="fp16",
             use_safetensors=True,
         )
     return pipe
